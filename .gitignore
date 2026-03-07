@@ -1,0 +1,30 @@
+# R package build artifacts
+*.Rcheck/
+*.tar.gz
+*.Rproj.user
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# LaTeX build artifacts
+manuscript/*.aux
+manuscript/*.bbl
+manuscript/*.blg
+manuscript/*.log
+manuscript/*.out
+manuscript/*.synctex.gz
+manuscript/*.fdb_latexmk
+manuscript/*.fls
+manuscript/*.toc
+manuscript/*.lof
+manuscript/*.lot
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+*.swp
+*~

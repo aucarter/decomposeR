@@ -1,0 +1,774 @@
+% ============================================================================
+% decomposer: A Model-Agnostic Framework for Factorial Decomposition
+%
+% This manuscript describes the decomposer R package and proves that
+% Das Gupta's symmetric standardization is a special case of the
+% Shapley value decomposition.
+% ============================================================================
+\documentclass[11pt]{article}
+
+% ---- Packages ----
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{natbib}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+
+\geometry{margin=1in}
+
+% ---- Theorem environments ----
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+
+% ---- Code listing style ----
+\lstset{
+  language=R,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue},
+  commentstyle=\color{gray},
+  stringstyle=\color{red!70!black},
+  showstringspaces=false,
+  breaklines=true,
+  frame=single,
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  xleftmargin=2em,
+  framexleftmargin=1.5em,
+  captionpos=b
+}
+
+% ---- Macros ----
+\newcommand{\pkg}[1]{\texttt{#1}}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\R}{\textsf{R}}
+
+\title{%
+  \pkg{decomposer}: A Model-Agnostic Framework for Factorial Decomposition
+  of Discrete-Time Simulation Outcomes \\[0.5em]
+  \large With a Proof of Equivalence Between Das~Gupta and
+  Shapley Value Decomposition}
+
+\author{
+  Austin Carter \\
+  Institute for Health Metrics and Evaluation \\
+  University of Washington \\
+  \texttt{aucarter@uw.edu}
+}
+
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+% ====================================================================
+\begin{abstract}
+Factorial decomposition methods are widely used in demography,
+epidemiology, and health economics to attribute changes in aggregate
+outcomes to individual driving factors.
+Two prominent approaches---Das~Gupta's symmetric standardization from
+demography and Shapley value decomposition from cooperative game
+theory---are often treated as distinct methods in the applied literature.
+We prove that the two are algebraically identical for factorial
+decomposition problems: the Das~Gupta weights are a special case of the
+Shapley value weights when the characteristic function is defined over
+binary factor coalitions.
+Building on this unification, we present \pkg{decomposer}, an \R{}
+package that provides a generic, model-agnostic decomposition framework
+for arbitrary calibrated discrete-time simulation models.
+The package defines an S3 interface consisting of four required methods
+and four optional methods; any simulation model that implements this
+interface can be decomposed without modifying the core algorithm.
+We describe the mathematical framework, software design, and
+computational optimizations (including warm-start support), and
+illustrate the package with an SIR epidemiological model.
+\end{abstract}
+
+\bigskip
+\noindent\textbf{Keywords:} decomposition, Shapley value, Das~Gupta,
+counterfactual analysis, R package, simulation
+
+
+% ====================================================================
+\section{Introduction}
+\label{sec:introduction}
+
+Understanding the relative contributions of multiple factors to an
+observed change is a fundamental analytical challenge.
+In demography, Das~Gupta developed a symmetric standardization approach
+for decomposing differences in rates into contributions from
+compositional and rate-specific components
+\citep{dasgupta1993standardization}.
+Independently, game-theoretic decomposition based on Shapley values
+\citep{shapley1953value} has been adopted in economics, political
+science, and, more recently, in global health and epidemiological
+modeling \citep{carter2024pediatric, shorrocks2013decomposition}.
+Both approaches share desirable properties: they produce a unique,
+symmetric decomposition in which the factor contributions sum exactly to
+the total observed change.
+
+Despite their shared properties, the two methods are typically presented,
+implemented, and discussed as though they were different techniques.
+Applied researchers may choose one framework over the other based on
+disciplinary convention without recognizing their mathematical
+equivalence.
+In Section~\ref{sec:equivalence} we prove that, for the class of
+factorial decomposition problems (where each factor can be switched
+between an observed and a counterfactual value), the Das~Gupta weights
+and Shapley value weights are identical.
+
+On the software side, decomposition analyses are frequently embedded
+within model-specific code, making them difficult to reuse, validate,
+and extend.
+Each new simulation model requires a bespoke implementation of the
+decomposition procedure, despite the underlying mathematical algorithm
+being the same.
+To address this, we present \pkg{decomposer}, an \R{} package that
+separates the decomposition algebra from the simulation model through a
+generic S3 interface.
+Any calibrated discrete-time simulation model---whether an SIR
+compartmental model, an HIV transmission model operating via matrix
+projection, or a demographic microsimulation---can use the
+\pkg{decomposer} framework by implementing four S3 methods that define
+how to run the model, summarize its outputs, construct counterfactual
+inputs, and retrieve baseline values.
+
+The remainder of this paper is organized as follows.
+Section~\ref{sec:framework} presents the mathematical framework for
+factorial decomposition.
+Section~\ref{sec:equivalence} proves the equivalence of Das~Gupta and
+Shapley decomposition.
+Section~\ref{sec:software} describes the software design and interface.
+Section~\ref{sec:example} provides a worked example.
+Section~\ref{sec:discussion} concludes with a discussion.
+
+
+% ====================================================================
+\section{Mathematical Framework}
+\label{sec:framework}
+
+\subsection{Setup and notation}
+
+Consider a discrete-time simulation model whose outcome of interest at
+time $t$ depends on $n$ factors
+$\mathbf{x} = (x_1, x_2, \ldots, x_n)$:
+\[
+  Y_t = f_t(x_1, x_2, \ldots, x_n).
+\]
+Each factor $x_i$ can take an \emph{observed} value $x_i^1$ (the actual
+value used in the calibrated model) or a \emph{counterfactual} value
+$x_i^0$ (the value in the absence of the factor, or its value at a
+reference year).
+In practice, the factors are often time-varying inputs such as treatment
+coverage, transmission rates, or demographic parameters, and each
+factor's observed and counterfactual trajectories span the full
+simulation period.
+
+The total change to be decomposed is:
+\begin{equation}
+\label{eq:total-change}
+  \Delta Y_t = f_t(x_1^1, \ldots, x_n^1)
+             - f_t(x_1^0, \ldots, x_n^0),
+\end{equation}
+and the goal is to write $\Delta Y_t = \sum_{i=1}^{n} \delta_i$ where
+$\delta_i$ represents the contribution of factor $i$.
+
+\subsection{Factorial design}
+
+For each of the $2^n$ binary vectors
+$\mathbf{b} = (b_1, \ldots, b_n) \in \{0, 1\}^n$, define the scenario
+in which factor $i$ takes value $x_i^{b_i}$:
+\[
+  Y_t(\mathbf{b}) = f_t\!\bigl(x_1^{b_1}, \ldots, x_n^{b_n}\bigr).
+\]
+The \emph{marginal effect} of switching factor $i$ from counterfactual
+to observed, holding the other factors at the configuration specified by
+$S \subseteq N \setminus \{i\}$ (i.e., factors in $S$ are observed;
+factors in $N \setminus S \setminus \{i\}$ are counterfactual), is:
+\begin{equation}
+\label{eq:marginal}
+  m_i(S)
+  = f_t(x_i^1, \, x_S^1, \, x_{N \setminus S \setminus \{i\}}^0)
+  - f_t(x_i^0, \, x_S^1, \, x_{N \setminus S \setminus \{i\}}^0),
+\end{equation}
+where $N = \{1, \ldots, n\}$ and the notation $x_S^1$ means
+$\{x_j^1 : j \in S\}$.
+
+Both the Das~Gupta and Shapley methods define $\delta_i$ as a weighted
+average of these marginal effects over all subsets
+$S \subseteq N \setminus \{i\}$.
+
+
+% ====================================================================
+\subsection{Das~Gupta's symmetric standardization}
+\label{sec:dasgupta}
+
+Das~Gupta's method \citep{dasgupta1993standardization} computes the
+contribution of factor $i$ as a symmetrically weighted average of
+marginal effects, where the weight depends only on the number of other
+factors in the ``on'' state:
+\begin{equation}
+\label{eq:dasgupta}
+  \delta_i^{\text{DG}}
+  = \sum_{\substack{S \subseteq N \setminus \{i\}}}
+    w_{|S|}^{\text{DG}} \cdot m_i(S),
+  \qquad
+  w_k^{\text{DG}} = \frac{1}{n \binom{n-1}{k}},
+  \quad k = 0, 1, \ldots, n-1.
+\end{equation}
+The weights are normalized so that the decomposition is exact, i.e.,
+$\sum_{i=1}^n \delta_i^{\text{DG}} = \Delta Y_t$.
+Das~Gupta derived these weights from the principle of symmetric
+treatment of factors: no factor should receive systematically higher
+weight by virtue of the order in which it is considered.
+
+
+% ====================================================================
+\subsection{Shapley value decomposition}
+\label{sec:shapley}
+
+The Shapley value \citep{shapley1953value} originates in cooperative
+game theory, where it provides the unique allocation of a coalition's
+payoff that satisfies the axioms of efficiency, symmetry, additivity,
+and the null-player property.
+
+To apply the Shapley value to factorial decomposition, define a
+\emph{characteristic function} $v : 2^N \to \mathbb{R}$ by:
+\begin{equation}
+\label{eq:characteristic}
+  v(S) = f_t(x_S^1, \, x_{N \setminus S}^0),
+  \qquad S \subseteq N.
+\end{equation}
+This function maps each coalition of factors (those taking their
+observed values) to the simulation outcome.
+The Shapley value for factor $i$ is:
+\begin{equation}
+\label{eq:shapley}
+  \phi_i
+  = \sum_{S \subseteq N \setminus \{i\}}
+    \frac{|S|! \, (n - |S| - 1)!}{n!}
+    \bigl[ v(S \cup \{i\}) - v(S) \bigr].
+\end{equation}
+Observe that $v(S \cup \{i\}) - v(S) = m_i(S)$ exactly as in
+Equation~\eqref{eq:marginal}, so the Shapley value is also a weighted
+average of marginal effects:
+\begin{equation}
+\label{eq:shapley-weight}
+  \phi_i
+  = \sum_{S \subseteq N \setminus \{i\}}
+    w_{|S|}^{\text{Sh}} \cdot m_i(S),
+  \qquad
+  w_k^{\text{Sh}} = \frac{k! \, (n - k - 1)!}{n!}.
+\end{equation}
+
+
+% ====================================================================
+\section{Equivalence of Das~Gupta and Shapley Decomposition}
+\label{sec:equivalence}
+
+\begin{theorem}
+\label{thm:equivalence}
+For the class of factorial decomposition problems defined in
+Section~\ref{sec:framework}, the Das~Gupta weight $w_k^{\mathrm{DG}}$
+and the Shapley weight $w_k^{\mathrm{Sh}}$ are identical for all
+$k = 0, 1, \ldots, n-1$.  That is:
+\[
+  \frac{k! \, (n - k - 1)!}{n!}
+  = \frac{1}{n \binom{n-1}{k}}.
+\]
+Consequently, $\delta_i^{\mathrm{DG}} = \phi_i$ for every factor $i$.
+\end{theorem}
+
+\begin{proof}
+We expand the right-hand side.  Recall that
+$\binom{n-1}{k} = \frac{(n-1)!}{k!\,(n-1-k)!}$, so:
+\begin{align*}
+  \frac{1}{n \binom{n-1}{k}}
+  &= \frac{1}{n \cdot \dfrac{(n-1)!}{k!\,(n-1-k)!}}
+  \\[6pt]
+  &= \frac{k! \, (n - 1 - k)!}{n \cdot (n-1)!}
+  \\[6pt]
+  &= \frac{k! \, (n - 1 - k)!}{n!},
+\end{align*}
+where the last step uses $n \cdot (n-1)! = n!$.
+Since $n - k - 1 = n - 1 - k$, both sides are:
+\[
+  w_k^{\text{DG}} = w_k^{\text{Sh}} = \frac{k!\,(n-k-1)!}{n!}.
+\]
+Thus the weight assigned to each marginal effect $m_i(S)$ is the same
+under both methods, and the decomposition results are identical.
+\end{proof}
+
+\begin{remark}
+This result shows that Das~Gupta's approach and the Shapley value
+decomposition, despite arising from different intellectual
+traditions---demographic standardization and cooperative game
+theory, respectively---yield the same decomposition for any factorial
+design with binary factors.
+Practitioners can therefore use whichever framing is most natural for
+their discipline while obtaining identical quantitative results.
+\end{remark}
+
+\begin{remark}
+The weights can also be expressed as:
+\[
+  w_k = \frac{1}{n \binom{n-1}{k}}
+\]
+which has an intuitive interpretation: there are $\binom{n-1}{k}$
+subsets of size $k$ among the $n-1$ other factors; averaging uniformly
+over all $n-1$ possible subset sizes requires dividing by $n$ (one for
+each possible subset size $k = 0, \ldots, n-1$) and then by the number
+of subsets of that size.
+\end{remark}
+
+\begin{corollary}
+The \pkg{decomposer} package implements a single weight formula
+$w_k = \bigl[n \binom{n-1}{k}\bigr]^{-1}$ that serves both the
+\code{das\_gupta} and \code{shapley} method options.
+The two options are retained for user-facing clarity, not because they
+produce different results.
+\end{corollary}
+
+
+% ====================================================================
+\section{Counterfactual Types}
+\label{sec:counterfactual}
+
+The interpretation of the decomposition depends critically on the
+definition of the counterfactual values $x_i^0$.
+The \pkg{decomposer} package supports two counterfactual types, each
+corresponding to a different analytical question.
+
+\subsection{Change-since counterfactual}
+
+Under the \emph{change-since} counterfactual (\code{cf\_type =
+"change\_since"}), the counterfactual value $x_i^0$ is the factor's
+value at a fixed baseline year $t_0$.
+For all years $t > t_0$, the factor is held at its baseline-year level
+rather than evolving to its observed trajectory.
+This measures the impact of \emph{changes in the factor since the
+baseline year}:
+\[
+  x_i^0(t) = x_i(t_0), \qquad \forall\, t \geq t_0.
+\]
+This is appropriate when the research question is:
+\emph{How much of the change in the outcome since year $t_0$ is
+attributable to changes in each factor?}
+
+\subsection{Total-impact counterfactual}
+
+Under the \emph{total-impact} counterfactual (\code{cf\_type =
+"total\_impact"}), the counterfactual value $x_i^0$ is zero (or
+whatever the model defines as the absence of the factor):
+\[
+  x_i^0(t) = 0, \qquad \forall\, t.
+\]
+This measures the \emph{total impact} of the factor, answering:
+\emph{How many additional (or fewer) outcomes would occur if this factor
+had never been present?}
+
+
+% ====================================================================
+\section{Software Design}
+\label{sec:software}
+
+\subsection{Overview}
+
+The \pkg{decomposer} package separates the decomposition algorithm from
+the simulation model through an S3 generic interface (Figure~\ref{fig:architecture}).
+The core package implements the factorial run-table generation,
+orchestration of counterfactual simulation runs, and the decomposition
+algebra.
+The user supplies a model object with methods that define the
+model-specific behavior: running simulations, summarizing outputs, and
+constructing counterfactuals.
+
+\begin{figure}[ht]
+\centering
+\fbox{\parbox{0.85\textwidth}{
+\texttt{%
+\begin{tabular}{l}
+\textbf{decomposer (core package)} \\
+\quad decompose() \textrm{--- orchestrator} \\
+\quad make\_run\_table() \textrm{--- $2^n$ factorial design} \\
+\quad run\_decomp() / decomp\_algebra() \textrm{--- weight calculation} \\[6pt]
+\textbf{S3 interface (user implements)} \\
+\quad run\_simulation.\emph{model}() \textrm{--- run the model} \\
+\quad summarize\_results.\emph{model}() \textrm{--- extract outcomes} \\
+\quad build\_counterfactual.\emph{model}() \textrm{--- construct CF params} \\
+\quad get\_baseline\_value.\emph{model}() \textrm{--- baseline reference} \\[6pt]
+\textbf{Optional methods} \\
+\quad prepare\_decomp.\emph{model}() \textrm{--- one-time setup} \\
+\quad supports\_warm\_start.\emph{model}() \textrm{--- warm-start flag} \\
+\quad get\_warm\_start\_state.\emph{model}() \\
+\quad run\_from\_warm\_start.\emph{model}()
+\end{tabular}
+}}
+\caption{Architecture of the \pkg{decomposer} package.  The core package
+  handles decomposition logic; users implement S3 methods for their
+  specific model.}
+\label{fig:architecture}
+\end{figure}
+
+\subsection{Required interface methods}
+
+Any model that wishes to use the \pkg{decomposer} framework must
+implement four S3 methods for its class:
+
+\begin{description}[leftmargin=1.5em, labelindent=0em]
+\item[\code{run\_simulation(model, params, ...)}]
+  Execute the simulation model with the given (possibly counterfactual)
+  parameters.  Returns raw simulation output in any model-specific
+  format.
+
+\item[\code{summarize\_results(model, sim\_output, ...)}]
+  Transform raw simulation output into a \code{data.table} with a
+  \code{year} column and one column per summary variable (e.g.,
+  \code{deaths}, \code{infections}).
+
+\item[\code{build\_counterfactual(model, params, factor\_name,
+  decomp\_year, cf\_type, baseline\_values, ...)}]
+  Given observed parameters, produce a modified parameter set where the
+  specified factor is replaced by its counterfactual value from
+  \code{decomp\_year} onward.
+
+\item[\code{get\_baseline\_value(model, params, factor\_name, cf\_type,
+  baseline\_year, ...)}]
+  Return the baseline value for a factor.  For \code{change\_since}
+  counterfactuals, this is the factor's value at the baseline year;
+  for \code{total\_impact}, it is the zero/null value.
+\end{description}
+
+\subsection{Optional methods for performance}
+
+For large-scale models, re-running the simulation from the beginning of
+time for each of the $2^n$ counterfactual combinations at each
+decomposition year can be prohibitively expensive.
+The \pkg{decomposer} package provides an optional \emph{warm-start}
+mechanism:
+
+\begin{description}[leftmargin=1.5em, labelindent=0em]
+\item[\code{prepare\_decomp(model, params, ...)}]
+  One-time preparation before the decomposition loop.  The default
+  implementation runs a full observed simulation and caches the result.
+
+\item[\code{supports\_warm\_start(model, ...)}]
+  Returns \code{TRUE} if the model supports warm starts.
+
+\item[\code{get\_warm\_start\_state(model, sim\_output, year, ...)}]
+  Extracts the model state at a given year from a full simulation,
+  enabling restart without re-simulating prior years.
+
+\item[\code{run\_from\_warm\_start(model, warm\_state, params,
+  output\_years, ...)}]
+  Runs the simulation forward from a saved state with (possibly
+  counterfactual) parameters, producing output only for the
+  requested years.
+\end{description}
+
+With warm starts, the cost of decomposing $T$ years with $n$ factors is
+reduced from $O(T \cdot 2^n \cdot C_{\text{full}})$ to
+$O(T \cdot 2^n \cdot C_{\text{partial}})$ where
+$C_{\text{partial}} \ll C_{\text{full}}$ because only the years from
+the decomposition year onward need to be simulated.
+
+\subsection{Orchestration pipeline}
+
+Algorithm~\ref{alg:decompose} summarizes the main \code{decompose()}
+function, which orchestrates the full pipeline.
+
+\begin{algorithm}[ht]
+\caption{The \code{decompose()} orchestration pipeline.}
+\label{alg:decompose}
+\begin{algorithmic}[1]
+\Require Model object \code{model}, parameters \code{params}, factors
+  $\{x_1, \ldots, x_n\}$, summary variables, decomposition years
+  $\{t_1, \ldots, t_T\}$
+\Ensure Decomposition results (standard, step scenarios, extended)
+\State \textbf{Prepare:}
+  \code{prepare\_decomp(model, params)} $\to$
+  cached full simulation and summary
+\State \textbf{Baseline values:}
+  $\forall\, i$: \code{get\_baseline\_value(model, params, $x_i$,
+  cf\_type, $t_0$)}
+\State \textbf{Run table:}
+  Generate $2^n$ binary combinations via
+  \code{make\_run\_table(factors)}
+\For{each decomposition year $t \in \{t_1, \ldots, t_T\}$}
+  \For{each row $\mathbf{b}$ in the run table}
+    \If{$\mathbf{b} = (1,\ldots,1)$}
+      \State Use cached full simulation summary
+    \Else
+      \State Build counterfactual params for factors where $b_i = 0$
+      \If{warm start supported}
+        \State \code{run\_from\_warm\_start(model, full\_sim,
+          params\_cf, $t$)}
+      \Else
+        \State \code{run\_simulation(model, params\_cf)}
+      \EndIf
+      \State \code{summarize\_results(model, sim\_output)}
+    \EndIf
+  \EndFor
+  \State Apply decomposition algebra
+    (Equation~\ref{eq:dasgupta} / \ref{eq:shapley-weight})
+\EndFor
+\State \Return standard decomp, step scenarios, extended decomp
+\end{algorithmic}
+\end{algorithm}
+
+
+\subsection{Factorial run table}
+
+The \code{make\_run\_table()} function generates the $2^n$ factorial
+design as a \code{data.table} with one row per combination and one
+column per factor indicating whether it is at its observed value (1)
+or counterfactual value (0):
+
+\begin{lstlisting}[caption={Run table for $n=3$ factors.},
+                   label=lst:runtable]
+make_run_table(c("A", "B", "C"))
+#    run_id A B C
+# 1:      1 0 0 0
+# 2:      2 1 0 0
+# 3:      3 0 1 0
+# 4:      4 1 1 0
+# 5:      5 0 0 1
+# 6:      6 1 0 1
+# 7:      7 0 1 1
+# 8:      8 1 1 1
+\end{lstlisting}
+
+
+% ====================================================================
+\section{Example: SIR Model Decomposition}
+\label{sec:example}
+
+To illustrate the \pkg{decomposer} framework, we implement a simple
+discrete-time SIR (Susceptible--Infected--Recovered) compartmental model
+with two decomposable intervention factors: (1) a reduction in the
+transmission rate $\beta$ and (2) an increase in the recovery rate
+$\gamma$ from treatment.
+
+\subsection{Model specification}
+
+The SIR model evolves a population of size $N$ through yearly time
+steps:
+\begin{align}
+  S_{t+1} &= S_t - \beta_t \, S_t \, I_t / N, \label{eq:sir-s} \\
+  I_{t+1} &= I_t + \beta_t \, S_t \, I_t / N
+             - \gamma_t \, I_t - \mu \, I_t, \label{eq:sir-i} \\
+  R_{t+1} &= R_t + \gamma_t \, I_t, \label{eq:sir-r}
+\end{align}
+where $\beta_t = \beta_0 (1 - r_t)$ is the effective transmission rate
+after applying a coverage-dependent reduction $r_t$,
+$\gamma_t = \gamma_0 + \tau_t$ is the effective recovery rate with
+additional treatment effect $\tau_t$, and $\mu = 0.01$ is the disease
+mortality rate.
+
+The two factors to decompose are:
+\begin{itemize}
+  \item \textbf{Transmission reduction} ($r_t$): gradually increases
+    from 0 to 0.5 over the simulation period.
+  \item \textbf{Treatment effect} ($\tau_t$): gradually increases from
+    0 to 0.15 over the simulation period.
+\end{itemize}
+
+\subsection{Interface implementation}
+
+Implementing the four required methods for the \code{sir\_model} class
+is straightforward:
+
+\begin{lstlisting}[caption={Implementing the \pkg{decomposer} interface for the SIR model.},
+                   label=lst:sir]
+# 1. Run simulation
+run_simulation.sir_model <- function(model, params, ...) {
+  # Discrete-time SIR loop (Equations 6-8)
+  # Returns data.table(year, S, I, R, infections, deaths)
+}
+
+# 2. Summarize results
+summarize_results.sir_model <- function(model, sim_output, ...) {
+  sim_output[, .(year, infections, deaths)]
+}
+
+# 3. Get baseline value
+get_baseline_value.sir_model <- function(model, params,
+    factor_name, cf_type, baseline_year, ...) {
+  if (cf_type == CF_TOTAL_IMPACT) return(list(type="zero"))
+  list(type = "change_since",
+       value = params[[factor_name]][as.character(baseline_year)])
+}
+
+# 4. Build counterfactual
+build_counterfactual.sir_model <- function(model, params,
+    factor_name, decomp_year, cf_type, baseline_values, ...) {
+  idx <- which(params$years >= decomp_year)
+  if (cf_type == CF_TOTAL_IMPACT) {
+    params[[factor_name]][idx] <- 0
+  } else {
+    params[[factor_name]][idx] <- baseline_values[[factor_name]]$value
+  }
+  params
+}
+\end{lstlisting}
+
+\subsection{Running the decomposition}
+
+With the interface implemented, running the decomposition requires a
+single call:
+
+\begin{lstlisting}[caption={Running the decomposition.}, label=lst:run]
+library(decomposer)
+
+model  <- create_sir_model(years = 1990:2020)
+params <- create_sir_params(years = 1990:2020)
+
+results <- decompose(
+  model        = model,
+  params       = params,
+  factors      = c("beta_reduction", "treatment_effect"),
+  summary_vars = c("deaths", "infections"),
+  decomp_years = 2000:2020,
+  method       = "das_gupta",
+  cf_type      = "change_since",
+  baseline_year = 2000
+)
+\end{lstlisting}
+
+The returned \code{results} object contains:
+\begin{itemize}
+  \item \code{results\$decomp} --- a \code{data.table} with one row per
+    decomposition year per summary variable, with columns for each
+    factor's contribution.
+  \item \code{results\$step\_scenarios} --- time series of the observed
+    outcome anchored at each decomposition year.
+  \item \code{results\$extended\_decomp} --- factor contributions at
+    all years beyond each decomposition year.
+  \item \code{results\$run\_table} --- the $2^n$ factorial design used.
+\end{itemize}
+
+
+% ====================================================================
+\section{Application: Pediatric HIV Decomposition}
+\label{sec:application}
+
+The \pkg{decomposer} package was developed in the context of an
+analysis decomposing changes in pediatric HIV burden across 45 countries
+in sub-Saharan Africa \citep{carter2024pediatric}.
+Two simulation backends were used: a legacy SpectrumSoftware/simmod
+matrix-projection model and the newer leapfrog model
+\citep{eaton2021naomi}.
+By implementing adapters for each backend
+(\code{simmod\_model} and \code{leapfrog\_model} classes), the same
+decomposition orchestration code was used for both, with the leapfrog
+adapter additionally supporting warm-start optimization to reduce
+computation time.
+The analysis decomposed five factors---vertical transmission,
+antiretroviral treatment, adult incidence trends, fertility, and
+child mortality---across 24 annual decomposition years, requiring
+$2^5 = 32$ simulation runs per location--year--draw combination.
+
+
+% ====================================================================
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Unified perspective}
+
+The proof that Das~Gupta and Shapley weights are identical
+(Theorem~\ref{thm:equivalence}) offers a unified perspective on two
+widely used decomposition methods.
+For applied researchers, this means the choice between ``Das~Gupta
+decomposition'' and ``Shapley value decomposition'' is one of framing
+and interpretation rather than methodology.
+Demographers accustomed to standardization-based reasoning and
+economists versed in cooperative game theory are performing precisely
+the same computation.
+
+This equivalence also implies that the extensive axiomatic
+characterizations of the Shapley value---efficiency, symmetry,
+linearity, and the null-player property
+\citep{shapley1953value}---automatically apply to the Das~Gupta method,
+providing an additional theoretical foundation for a technique that was
+originally motivated by practical considerations of symmetric treatment.
+
+\subsection{Software contributions}
+
+The \pkg{decomposer} package makes several practical contributions:
+
+\begin{enumerate}
+  \item \textbf{Separation of concerns.}
+    The decomposition algebra is entirely decoupled from the simulation
+    model.
+    New models can be incorporated by implementing four methods without
+    modifying the decomposition code.
+
+  \item \textbf{Validation.}
+    The \code{validate\_model\_interface()} function provides a
+    smoke test that checks for the existence of required methods and
+    runs a minimal simulation to verify the interface contract.
+
+  \item \textbf{Performance.}
+    The warm-start mechanism enables significant computational savings
+    for models where the simulation state at an intermediate year can
+    be extracted and used as an initial condition.
+
+  \item \textbf{Flexibility.}
+    Two counterfactual types (\code{change\_since} and
+    \code{total\_impact}) support different analytical questions without
+    requiring separate implementations.
+
+  \item \textbf{Reproducibility.}
+    Standardizing the decomposition procedure across models reduces the
+    risk of implementation errors and facilitates code review.
+\end{enumerate}
+
+\subsection{Limitations and extensions}
+
+The current implementation is limited to binary factorial designs where
+each factor is either fully observed or fully counterfactual.
+Extensions to partial factor levels (e.g., attributing effects to
+changes in specific quantiles of a factor) or to continuous factor
+spaces would require a generalized weighting scheme.
+The $2^n$ computational complexity also limits the practical number of
+factors, though this is inherent to full factorial decomposition and is
+mitigated by the warm-start optimization.
+
+Future work could extend the framework to support sequential
+(time-ordered) decomposition as a complement to the current symmetric
+approach, as well as uncertainty quantification through bootstrap or
+posterior-draw-level decomposition.
+
+
+% ====================================================================
+\section{Conclusion}
+
+We have proved that the Das~Gupta symmetric standardization and the
+Shapley value decomposition produce identical results for factorial
+decomposition problems, unifying two traditions in the decomposition
+literature.
+The \pkg{decomposer} R package implements this unified framework in a
+model-agnostic fashion, enabling any calibrated discrete-time simulation
+model to be decomposed by implementing a small S3 interface.
+The package is available at
+\url{https://github.com/aucarter/decomposer}.
+
+
+% ====================================================================
+% References
+% ====================================================================
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
