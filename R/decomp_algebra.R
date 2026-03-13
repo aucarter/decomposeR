@@ -33,22 +33,7 @@ run_decomp <- function(data, params) {
     return(decomp_algebra(data, params))
   }
 
-  groups <- unique(data[, group_cols, with = FALSE])
-  decomp <- rbindlist(lapply(seq_len(nrow(groups)), function(i) {
-    row <- groups[i]
-    # Build filter expression
-    subset_dt <- data
-    for (col in group_cols) {
-      subset_dt <- subset_dt[get(col) == row[[col]]]
-    }
-    result <- decomp_algebra(subset_dt, params)
-    for (col in group_cols) {
-      result[[col]] <- row[[col]]
-    }
-    result
-  }))
-
-  return(decomp)
+  data[, decomp_algebra(.SD, params), by = group_cols]
 }
 
 
@@ -64,10 +49,45 @@ run_decomp <- function(data, params) {
 #' @export
 decomp_algebra <- function(data, params) {
   dt <- data
-  decomp <- rbindlist(lapply(params$summary_vars, function(summary_var) {
-    decomp_pair(dt, params, summary_var)
-  }))
-  return(decomp)
+  vars <- params$decomp_vars
+  n_vars <- length(vars)
+  sv_cols <- intersect(params$summary_vars, names(dt))
+
+  if (params$decomp_method %in% c("das_gupta", "shapley")) {
+    denoms <- n_vars * choose(n_vars - 1, 0:(n_vars - 1))
+  } else {
+    stop(sprintf("Unknown decomp_method: '%s'. Use 'das_gupta' or 'shapley'.",
+                 params$decomp_method))
+  }
+
+  # Process all summary vars at once via matrix operations
+  val_mat <- as.matrix(dt[, sv_cols, with = FALSE])
+  effects <- matrix(0, nrow = length(sv_cols), ncol = n_vars)
+
+  for (idx in seq_along(vars)) {
+    x <- vars[idx]
+    other <- setdiff(vars, x)
+    after_idx  <- which(dt[[x]] == 1)
+    before_idx <- which(dt[[x]] == 0)
+
+    diffs <- val_mat[after_idx, , drop = FALSE] -
+             val_mat[before_idx, , drop = FALSE]
+
+    if (length(other) > 0) {
+      k <- rowSums(as.matrix(dt[after_idx, other, with = FALSE]) == 1)
+    } else {
+      k <- rep(0L, length(after_idx))
+    }
+    weights <- 1 / denoms[k + 1L]
+
+    effects[, idx] <- colSums(diffs * weights)
+  }
+
+  result <- data.table(measure = sv_cols)
+  for (idx in seq_along(vars)) {
+    set(result, i = NULL, j = vars[idx], value = effects[, idx])
+  }
+  return(result)
 }
 
 
@@ -92,36 +112,27 @@ decomp_pair <- function(dt, params, summary_var) {
   n_vars <- length(vars)
 
   if (params$decomp_method %in% c("das_gupta", "shapley")) {
-    # Das Gupta / Shapley weights: 1 / (n * C(n-1, k))
-    # k = number of other vars that are "on"
-    # These two methods produce identical weights for factorial decomposition.
-    # Shapley: w(k) = k!(n-1-k)!/n! → denom = n!/(k!(n-1-k)!) = n*C(n-1,k)
-    # Das Gupta: same formula derived from symmetric standardization.
     denoms <- n_vars * choose(n_vars - 1, 0:(n_vars - 1))
   } else {
     stop(sprintf("Unknown decomp_method: '%s'. Use 'das_gupta' or 'shapley'.",
                  params$decomp_method))
   }
 
-  effects <- t(unlist(lapply(vars, function(x) {
+  effects <- vapply(vars, function(x) {
     other <- setdiff(vars, x)
     after_idx  <- which(dt[[x]] == 1)
     before_idx <- which(dt[[x]] == 0)
     total_diffs <- path_totals[after_idx] - path_totals[before_idx]
 
-    # Count number of "other" variables that are 1 (on) for each pair
-    # k ranges from 0 to n-1; denom_idx = k + 1 for 1-based indexing
-    denom_idx <- as.vector(
-      apply(dt[after_idx, other, with = FALSE], 1, function(row) sum(row == 1) + 1)
-    )
+    if (length(other) > 0) {
+      k <- rowSums(as.matrix(dt[after_idx, other, with = FALSE]) == 1)
+    } else {
+      k <- rep(0L, length(after_idx))
+    }
+    sum(total_diffs / denoms[k + 1L])
+  }, numeric(1))
 
-    effect <- sum(total_diffs / denoms[denom_idx])
-    return(effect)
-  })))
-
-  colnames(effects) <- vars
-  effects <- as.data.frame(effects)
+  effects <- as.data.frame(t(effects))
   effects$measure <- summary_var
-
   return(effects)
 }

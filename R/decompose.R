@@ -45,6 +45,9 @@
 #' @param step_scenarios Logical, whether to compute step scenarios (all-on
 #'   time series per decomp year). Default TRUE.
 #' @param verbose        Logical, print progress messages. Default TRUE.
+#' @param n_cores        Integer, number of cores for parallel counterfactual
+#'   simulation runs. Default 1 (sequential). Values > 1 use
+#'   \code{parallel::mclapply()} (Unix/Mac only).
 #' @param ...            Additional arguments passed to model methods.
 #'
 #' @return A list with components:
@@ -72,6 +75,7 @@ decompose <- function(model,
                       extended       = TRUE,
                       step_scenarios = TRUE,
                       verbose        = TRUE,
+                      n_cores        = 1L,
                       ...) {
 
   # ---- Validate inputs ----
@@ -82,6 +86,7 @@ decompose <- function(model,
   stopifnot(method %in% c("das_gupta", "shapley"))
 
   decomp_years <- sort(as.integer(decomp_years))
+  n_cores <- as.integer(max(n_cores, 1L))
 
   # ---- Build decomposition parameter bundle ----
   decomp_params <- list(
@@ -99,8 +104,8 @@ decompose <- function(model,
 
   if (verbose) {
     message(sprintf(
-      "Decomposition: %d factors, %d combinations, %d years, method=%s, cf_type=%s",
-      length(factors), nrow(run_table), length(decomp_years), method, cf_type
+      "Decomposition: %d factors, %d combinations, %d years, method=%s, cf_type=%s, cores=%d",
+      length(factors), nrow(run_table), length(decomp_years), method, cf_type, n_cores
     ))
   }
 
@@ -135,20 +140,17 @@ decompose <- function(model,
     output_years    <- seq(y, max(decomp_years))
 
     # Run all counterfactual combinations for this decomp year
-    year_sims <- lapply(run_table$run_id, function(run_id) {
-      run_spec <- as.list(run_table[run_id, factors, with = FALSE])
-      run_spec <- unlist(run_spec)
+    run_one_cf <- function(run_id) {
+      run_spec <- unlist(as.list(run_table[run_id, factors, with = FALSE]))
 
       # All-on case: use the pre-computed full simulation
       if (all(run_spec == 1) && !is.null(full_summary)) {
-        summary_subset <- full_summary[year %in% output_years]
-        return(list(summary = summary_subset))
+        return(list(summary = full_summary[year %in% output_years]))
       }
 
       # Build counterfactual parameters
       params_cf <- params
-      mod_factors <- names(run_spec[run_spec == 0])
-      for (fname in mod_factors) {
+      for (fname in names(run_spec[run_spec == 0])) {
         params_cf <- build_counterfactual(
           model, params_cf, fname, y, cf_type, baseline_values, ...
         )
@@ -165,15 +167,20 @@ decompose <- function(model,
       }
 
       summary_cf <- summarize_results(model, sim_cf, ...)
-
-      # If warm start, summary may already be filtered to output_years
-      # If full run, filter to output years
       if ("year" %in% names(summary_cf)) {
         summary_cf <- summary_cf[year %in% output_years]
       }
 
       return(list(summary = summary_cf))
-    })
+    }
+
+    if (n_cores > 1L) {
+      year_sims <- parallel::mclapply(
+        run_table$run_id, run_one_cf, mc.cores = n_cores
+      )
+    } else {
+      year_sims <- lapply(run_table$run_id, run_one_cf)
+    }
 
     # ---- Build summary table ----
     summary_dt <- rbindlist(lapply(seq_along(year_sims), function(r) {
@@ -205,12 +212,8 @@ decompose <- function(model,
 
     # ---- Extended factor decomposition ----
     if (extended) {
-      out_years_decomp <- seq(y, max(decomp_years))
-      ext <- rbindlist(lapply(out_years_decomp, function(t) {
-        yd <- run_decomp(summary_dt[year == t], decomp_params)
-        yd[, year := t]
-        yd
-      }))
+      ext_group <- intersect(c("ihme_loc_id", "year"), names(summary_dt))
+      ext <- summary_dt[year >= y, decomp_algebra(.SD, decomp_params), by = ext_group]
       ext[, decomp_year := y]
       ext_decomp_list[[as.character(y)]] <<- ext
     }
