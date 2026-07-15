@@ -189,7 +189,7 @@ if (FALSE) {  # Set to TRUE to run
     factors      = c("beta_reduction", "treatment_effect"),
     summary_vars = c("deaths", "infections"),
     decomp_years = 2000:2020,
-    method       = "das_gupta",
+    method       = "shapley",
     cf_type      = "change_since",
     baseline_year = 2000
   )
@@ -204,7 +204,7 @@ if (FALSE) {  # Set to TRUE to run
     factors      = c("beta_reduction", "treatment_effect"),
     summary_vars = c("deaths", "infections"),
     decomp_years = 2000:2020,
-    method       = "das_gupta",
+    method       = "shapley",
     cf_type      = "total_impact"
   )
 

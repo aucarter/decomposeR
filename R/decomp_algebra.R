@@ -1,12 +1,40 @@
 # ============================================================================
 # decomposer: decomp_algebra.R
 #
-# Model-agnostic decomposition algebra: Das Gupta and Shapley methods.
+# Model-agnostic Shapley value decomposition algebra.
 #
 # These functions operate on a summary data.table that contains simulation
 # outputs for all 2^n (or 3^n, etc.) counterfactual combinations. They are
 # purely mathematical and have no knowledge of the underlying model.
+#
+# Note: "Das Gupta" decomposition is the special case of the Shapley value for
+# binary on/off factors and produces identical weights, so it is treated as an
+# alias of Shapley throughout (see normalize_decomp_method()).
 # ============================================================================
+
+#' Normalize a decomposition method string to the canonical Shapley value
+#'
+#' Shapley is the only supported method. \code{"das_gupta"} is accepted as a
+#' deprecated alias because Das Gupta's symmetric standardization is the
+#' special case of the Shapley value for binary on/off factors, yielding
+#' identical weights.
+#'
+#' @param method Character method name.
+#' @return The canonical method string \code{"shapley"}.
+#' @keywords internal
+#' @noRd
+normalize_decomp_method <- function(method) {
+  if (identical(method, "das_gupta")) {
+    return("shapley")
+  }
+  if (!identical(method, "shapley")) {
+    stop(sprintf(
+      paste0("Unknown decomp_method: '%s'. Use 'shapley' ",
+             "(or the deprecated alias 'das_gupta')."),
+      method))
+  }
+  "shapley"
+}
 
 #' Run decomposition across locations and decomp years
 #'
@@ -20,7 +48,8 @@
 #'   \describe{
 #'     \item{summary_vars}{Character vector of summary variable column names}
 #'     \item{decomp_vars}{Character vector of factor column names (0/1 indicators)}
-#'     \item{decomp_method}{Character, \code{"das_gupta"} or \code{"shapley"}}
+#'     \item{decomp_method}{Character, \code{"shapley"} (\code{"das_gupta"}
+#'       accepted as a deprecated alias)}
 #'   }
 #'
 #' @return A \code{data.table} with one row per location × decomp-year ×
@@ -53,12 +82,10 @@ decomp_algebra <- function(data, params) {
   n_vars <- length(vars)
   sv_cols <- intersect(params$summary_vars, names(dt))
 
-  if (params$decomp_method %in% c("das_gupta", "shapley")) {
-    denoms <- n_vars * choose(n_vars - 1, 0:(n_vars - 1))
-  } else {
-    stop(sprintf("Unknown decomp_method: '%s'. Use 'das_gupta' or 'shapley'.",
-                 params$decomp_method))
-  }
+  normalize_decomp_method(params$decomp_method)
+  # Shapley value weights: 1 / (n * C(n-1, k)) where k = number of other
+  # factors "on". (Equivalently the Das Gupta symmetric-standardization weight.)
+  denoms <- n_vars * choose(n_vars - 1, 0:(n_vars - 1))
 
   # Process all summary vars at once via matrix operations
   val_mat <- as.matrix(dt[, sv_cols, with = FALSE])
@@ -91,7 +118,7 @@ decomp_algebra <- function(data, params) {
 }
 
 
-#' Decompose a single summary variable using Das Gupta or Shapley weights
+#' Decompose a single summary variable using Shapley value weights
 #'
 #' For each factor, computes the weighted average marginal effect of switching
 #' the factor from 0 (counterfactual) to 1 (observed), averaging over all
@@ -111,12 +138,10 @@ decomp_pair <- function(dt, params, summary_var) {
   vars <- params$decomp_vars
   n_vars <- length(vars)
 
-  if (params$decomp_method %in% c("das_gupta", "shapley")) {
-    denoms <- n_vars * choose(n_vars - 1, 0:(n_vars - 1))
-  } else {
-    stop(sprintf("Unknown decomp_method: '%s'. Use 'das_gupta' or 'shapley'.",
-                 params$decomp_method))
-  }
+  normalize_decomp_method(params$decomp_method)
+  # Shapley value weights: 1 / (n * C(n-1, k)) where k = number of other
+  # factors "on". (Equivalently the Das Gupta symmetric-standardization weight.)
+  denoms <- n_vars * choose(n_vars - 1, 0:(n_vars - 1))
 
   effects <- vapply(vars, function(x) {
     other <- setdiff(vars, x)

@@ -30,8 +30,11 @@
 #'   in the output of \code{summarize_results()}).
 #' @param decomp_years   Integer vector of years at which to perform
 #'   decomposition (e.g., \code{2000:2023}).
-#' @param method         Character, decomposition method: \code{"das_gupta"}
-#'   (default) or \code{"shapley"}.
+#' @param method         Character, decomposition method. Only
+#'   \code{"shapley"} (default) is supported. \code{"das_gupta"} is accepted
+#'   as a deprecated alias: Das Gupta's symmetric standardization is the
+#'   special case of the Shapley value for binary on/off factors, so the
+#'   weights are identical.
 #' @param cf_type        Character, counterfactual type:
 #'   \code{"change_since"} (default) — counterfactual is the value at the
 #'   baseline year; or \code{"total_impact"} — counterfactual is zero / no
@@ -68,7 +71,7 @@ decompose <- function(model,
                       factors,
                       summary_vars,
                       decomp_years,
-                      method         = "das_gupta",
+                      method         = "shapley",
                       cf_type        = CF_CHANGE_SINCE,
                       baseline_year  = min(decomp_years),
                       decomp_scalar  = 0,
@@ -83,7 +86,7 @@ decompose <- function(model,
   stopifnot(is.character(summary_vars), length(summary_vars) > 0)
   stopifnot(is.numeric(decomp_years), length(decomp_years) > 0)
   stopifnot(cf_type %in% c(CF_CHANGE_SINCE, CF_TOTAL_IMPACT))
-  stopifnot(method %in% c("das_gupta", "shapley"))
+  method <- normalize_decomp_method(method)
 
   decomp_years <- sort(as.integer(decomp_years))
   n_cores <- as.integer(max(n_cores, 1L))

@@ -29,7 +29,7 @@ test_that("decomp_pair correctly decomposes a simple additive example", {
   )
   params <- list(
     decomp_vars = c("A", "B"),
-    decomp_method = "das_gupta",
+    decomp_method = "shapley",
     summary_vars = "outcome"
   )
 
@@ -40,26 +40,25 @@ test_that("decomp_pair correctly decomposes a simple additive example", {
 })
 
 
-test_that("decomposition effects sum to total difference (Das Gupta)", {
-  # Random example with 3 factors
+test_that("'das_gupta' is accepted as a deprecated alias for Shapley", {
+  # Das Gupta's symmetric standardization is the binary special case of the
+  # Shapley value, so the alias must produce identical effects.
   set.seed(42)
   rt <- make_run_table(c("f1", "f2", "f3"))
   dt <- copy(rt)
-  # Assign outcome as some nonlinear function
-
   dt[, outcome := 100 + 30 * f1 + 50 * f2 + 20 * f3 + 10 * f1 * f2 + 5 * f2 * f3]
 
-  params <- list(
-    decomp_vars = c("f1", "f2", "f3"),
-    decomp_method = "das_gupta",
-    summary_vars = "outcome"
-  )
-
-  result <- decomp_algebra(dt, params)
+  alias  <- decomp_algebra(dt, list(decomp_vars = c("f1", "f2", "f3"),
+                                    decomp_method = "das_gupta",
+                                    summary_vars = "outcome"))
+  canon  <- decomp_algebra(dt, list(decomp_vars = c("f1", "f2", "f3"),
+                                    decomp_method = "shapley",
+                                    summary_vars = "outcome"))
+  expect_equal(alias, canon, tolerance = 1e-10)
 
   total_diff <- dt[f1 == 1 & f2 == 1 & f3 == 1, outcome] -
                 dt[f1 == 0 & f2 == 0 & f3 == 0, outcome]
-  sum_effects <- result$f1 + result$f2 + result$f3
+  sum_effects <- alias$f1 + alias$f2 + alias$f3
   expect_equal(sum_effects, total_diff, tolerance = 1e-10)
 })
 
@@ -94,7 +93,7 @@ test_that("run_decomp handles grouped data", {
   )
   params <- list(
     decomp_vars = c("A", "B"),
-    decomp_method = "das_gupta",
+    decomp_method = "shapley",
     summary_vars = "outcome"
   )
 

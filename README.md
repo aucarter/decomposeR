@@ -5,9 +5,9 @@ A model-agnostic decomposition framework for discrete-time simulations.
 ## Overview
 
 `decomposer` attributes changes in simulation outcomes to individual input
-factors using **Das Gupta** or **Shapley** decomposition methods. Any
-calibrated discrete-time simulation model can use this package by implementing
-a small set of S3 methods.
+factors using **Shapley value decomposition**. Any calibrated discrete-time
+simulation model can use this package by implementing a small set of S3
+methods.
 
 ## Two Counterfactual Types
 
@@ -70,7 +70,7 @@ results <- decompose(
   factors      = c("treatment_a", "treatment_b", "demographic_x"),
   summary_vars = c("deaths", "infections"),
   decomp_years = 2000:2023,
-  method       = "das_gupta",   # or "shapley"
+  method       = "shapley",     # only supported method
   cf_type      = "change_since" # or "total_impact"
 )
 
@@ -96,14 +96,16 @@ validate_model_interface(
 )
 ```
 
-## Decomposition Methods
+## Decomposition Method
 
-- **Das Gupta**: Weights marginal effects by `1 / (n × C(n-1, k))` where
-  `k` is the number of other factors in the "on" state. Standard epidemiological
-  decomposition method.
+**Shapley value** decomposition weights each factor's marginal effect by
+`1 / (n × C(n-1, k))`, where `k` is the number of other factors in the "on"
+state, averaging the factor's contribution over all coalition sizes
+(equivalently, over all factor orderings). This guarantees factor effects sum
+to the total difference between the fully-observed and fully-counterfactual
+scenarios.
 
-- **Shapley**: Equal weights across all coalition sizes. Game-theoretic
-  attribution method.
-
-Both methods satisfy the property that factor effects sum to the total
-difference between the fully-observed and fully-counterfactual scenarios.
+Das Gupta's symmetric standardization is the special case of the Shapley value
+for binary on/off factors and produces identical weights, so `method =
+"das_gupta"` is accepted as a deprecated alias for the same Shapley
+computation.
